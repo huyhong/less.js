@@ -60,6 +60,13 @@
   shade: #686868;
   shade-full: #000000;
   shade-percent: #686868;
+  golden-line-height: 28px;
+  golden-font-size: 25px;
+  modular-h1: 51px;
+  modular-h2: 28px;
+  modular-h3: 21px;
+  modular-body: 16px;
+  modular-subheader: 12px;
   mix: #ff3300;
   mix-0: #ffff00;
   mix-100: #ff0000;
