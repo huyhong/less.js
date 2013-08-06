@@ -5,107 +5,239 @@ var path = require('path'),
 var less = require('../lib/less');
 var stylize = require('../lib/less/lessc_helper').stylize;
 
+var globals = Object.keys(global);
+
 var oneTestOnly = process.argv[2];
+
+var isVerbose = process.env.npm_config_loglevel === 'verbose';
+
+var totalTests = 0,
+    failedTests = 0,
+    passedTests = 0;
 
 less.tree.functions.add = function (a, b) {
     return new(less.tree.Dimension)(a.value + b.value);
-}
+};
 less.tree.functions.increment = function (a) {
     return new(less.tree.Dimension)(a.value + 1);
-}
+};
 less.tree.functions._color = function (str) {
-    if (str.value === "evil red") { return new(less.tree.Color)("600") }
-}
+    if (str.value === "evil red") { return new(less.tree.Color)("600"); }
+};
 
 sys.puts("\n" + stylize("LESS", 'underline') + "\n");
 
-fs.readdirSync('test/less').forEach(function (file) {
-    if (! /\.less/.test(file)) { return }
-    
-    var name = path.basename(file, '.less');
-    
-    if (oneTestOnly && name !== oneTestOnly) { return; }
+runTestSet({strictMath: true, relativeUrls: true, silent: true});
+runTestSet({strictMath: true, strictUnits: true}, "errors/",
+            testErrors, null, getErrorPathReplacementFunction("errors"));
+runTestSet({strictMath: true, strictUnits: true, javascriptEnabled: false}, "no-js-errors/",
+            testErrors, null, getErrorPathReplacementFunction("no-js-errors"));
+runTestSet({strictMath: true, dumpLineNumbers: 'comments'}, "debug/", null,
+           function(name) { return name + '-comments'; });
+runTestSet({strictMath: true, dumpLineNumbers: 'mediaquery'}, "debug/", null,
+           function(name) { return name + '-mediaquery'; });
+runTestSet({strictMath: true, dumpLineNumbers: 'all'}, "debug/", null,
+           function(name) { return name + '-all'; });
+runTestSet({strictMath: true, relativeUrls: false, rootpath: "folder (1)/"}, "static-urls/");
+runTestSet({strictMath: true, compress: true}, "compression/");
+runTestSet({}, "legacy/");
+runTestSet({strictMath: true, strictUnits: true, sourceMap: true }, "sourcemaps/",
+    testSourcemap, null, null, function(filename) { return path.join('test/sourcemaps', filename) + '.json'; });
 
-    toCSS('test/less/' + file, function (err, less) {
+testNoOptions();
 
-        fs.readFile(path.join('test/css', name) + '.css', 'utf-8', function (e, css) {
-            sys.print("- " + name + ": ")
-            css = css && css.replace(/\r\n/g, '\n');
-            if (less === css) { sys.print(stylize('OK', 'green')) }
-            else if (err) {
-                sys.print(stylize("ERROR: " + (err && err.message), 'red'));
-            } else {
-                sys.print(stylize("FAIL", 'yellow') + '\n');
-                
-                require('diff').diffLines(css, less).forEach(function(item) {
-                  if(item.added || item.removed) {
-                    sys.print(stylize(item.value, item.added ? 'green' : 'red'));
-                  } else {
-                    sys.print(item.value);
-                  }
-                })
+function getErrorPathReplacementFunction(dir) {
+    return function(input) {
+        return input.replace(
+                "{path}", path.join(process.cwd(), "/test/less/" + dir + "/"))
+            .replace("{pathrel}", path.join("test", "less", dir + "/"))
+            .replace("{pathhref}", "")
+            .replace("{404status}", "")
+            .replace(/\r\n/g, '\n');
+    };
+}
+
+function testSourcemap(name, err, compiledLess, doReplacements, sourcemap) {
+    fs.readFile(path.join('test/', name) + '.json', 'utf8', function (e, expectedSourcemap) {
+        sys.print("- " + name + ": ");
+        if (sourcemap === expectedSourcemap) {
+            ok('OK');
+        } else if (err) {
+            fail("ERROR: " + (err && err.message));
+            if (isVerbose) {
+                console.error();
+                console.error(err.stack);
             }
-            sys.puts("");
+        } else {
+            difference("FAIL", expectedSourcemap, sourcemap);
+        }
+        sys.puts("");
+    });
+}
+
+function testErrors(name, err, compiledLess, doReplacements) {
+    fs.readFile(path.join('test/less/', name) + '.txt', 'utf8', function (e, expectedErr) {
+        sys.print("- " + name + ": ");
+        expectedErr = doReplacements(expectedErr, 'test/less/errors/');
+        if (!err) {
+            if (compiledLess) {
+                fail("No Error", 'red');
+            } else {
+                fail("No Error, No Output");
+            }
+        } else {
+            var errMessage = less.formatError(err);
+            if (errMessage === expectedErr) {
+                ok('OK');
+            } else {
+                difference("FAIL", expectedErr, errMessage);
+            }
+        }
+        sys.puts("");
+    });
+}
+
+function globalReplacements(input, directory) {
+    var p = path.join(process.cwd(), directory),
+        pathimport = path.join(process.cwd(), directory + "import/"),
+        pathesc = p.replace(/[.:/\\]/g, function(a) { return '\\' + (a=='\\' ? '\/' : a); }),
+        pathimportesc = pathimport.replace(/[.:/\\]/g, function(a) { return '\\' + (a=='\\' ? '\/' : a); });
+
+    return input.replace(/\{path\}/g, p)
+            .replace(/\{pathesc\}/g, pathesc)
+            .replace(/\{pathimport\}/g, pathimport)
+            .replace(/\{pathimportesc\}/g, pathimportesc)
+            .replace(/\r\n/g, '\n');
+}
+
+function checkGlobalLeaks() {
+    return Object.keys(global).filter(function(v) {
+        return globals.indexOf(v) < 0;
+    });
+}
+
+function runTestSet(options, foldername, verifyFunction, nameModifier, doReplacements, getFilename) {
+    foldername = foldername || "";
+
+    if(!doReplacements)
+        doReplacements = globalReplacements;
+
+    fs.readdirSync(path.join('test/less/', foldername)).forEach(function (file) {
+        if (! /\.less/.test(file)) { return; }
+        
+        var name = foldername + path.basename(file, '.less');
+        
+        if (oneTestOnly && name !== oneTestOnly) { return; }
+        
+        totalTests++;
+
+        if (options.sourceMap) {
+            var sourceMapOutput;
+            options.writeSourceMap = function(output) {
+                sourceMapOutput = output;
+            };
+            options.sourceMapOutputFilename = name + ".css";
+            options.sourceMapBasepath = path.join(process.cwd(), "test/less");
+            options.sourceMapRootpath = "testweb/";
+        }
+
+        toCSS(options, path.join('test/less/', foldername + file), function (err, less) {
+
+            if (verifyFunction) {
+                return verifyFunction(name, err, less, doReplacements, sourceMapOutput);
+            }
+            var css_name = name;
+            if(nameModifier) { css_name = nameModifier(name); }
+            fs.readFile(path.join('test/css', css_name) + '.css', 'utf8', function (e, css) {
+                sys.print("- " + css_name + ": ");
+                
+                css = css && doReplacements(css, 'test/less/' + foldername);
+                if (less === css) { ok('OK'); }
+                else if (err) {
+                    fail("ERROR: " + (err && err.message));
+                    if (isVerbose) {
+                        console.error();
+                        console.error(err.stack);
+                    }
+                } else {
+                    difference("FAIL", css, less);
+                }
+                sys.puts("");
+            });
         });
     });
-});
+}
 
-fs.readdirSync('test/less/errors').forEach(function (file) {
-    if (! /\.less/.test(file)) { return }
-    
-    var name = path.basename(file, '.less');
-    
-    if (oneTestOnly && ("error/" + name) !== oneTestOnly) { return; }
-
-    toCSS('test/less/errors/' + file, function (err, compiledLess) {
-        fs.readFile(path.join('test/less/errors', name) + '.txt', 'utf-8', function (e, expectedErr) {
-            sys.print("- error/" + name + ": ");
-            expectedErr = expectedErr.replace("{path}", path.join(process.cwd(), "/test/less/errors/"))
-                .replace("{pathrel}", path.join("test", "less", "errors/"))
-                .replace(/\r\n/g, '\n');
-            if (!err) {
-                if (compiledLess) {
-                    sys.print(stylize("No Error", 'red'));
-                } else {
-                    sys.print(stylize("No Error, No Output", 'red'));
-                }
-                
-            } else {
-                var errMessage = less.formatError(err);
-                if (errMessage === expectedErr) {
-                    sys.print(stylize('OK', 'green'));                    
-                } else {
-                    sys.print(stylize("FAIL", 'yellow') + '\n');
-                
-                    require('diff').diffLines(expectedErr, errMessage).forEach(function(item) {
-                      if(item.added || item.removed) {
-                        sys.print(stylize(item.value, item.added ? 'green' : 'red'));
-                      } else {
-                        sys.print(item.value);
-                      }
-                    })
-                }
-            }
-            sys.puts("");
-        });
+function diff(left, right) {
+    sys.puts("");
+    require('diff').diffLines(left, right).forEach(function(item) {
+      if(item.added || item.removed) {
+        var text = item.value.replace("\n", String.fromCharCode(182) + "\n");
+        sys.print(stylize(text, item.added ? 'green' : 'red'));
+      } else {
+        sys.print(item.value);
+      }
     });
-});
+}
 
-function toCSS(path, callback) {
-    var tree, css;
-    fs.readFile(path, 'utf-8', function (e, str) {
-        if (e) { return callback(e) }
+function fail(msg) {
+    sys.print(stylize(msg, 'red'));
+    failedTests++;
+    endTest();
+}
 
-        new(less.Parser)({
-            paths: [require('path').dirname(path)],
-            optimization: 0,
-            filename: require('path').resolve(process.cwd(), path)
-        }).parse(str, function (err, tree) {
+function difference(msg, left, right) {
+    sys.print(stylize(msg, 'yellow'));
+    failedTests++;
+                
+    diff(left, right);
+    endTest();
+}
+
+function ok(msg) {
+    sys.print(stylize(msg, 'green'));
+    passedTests++;
+    endTest();
+}
+
+function endTest() {
+    var leaked = checkGlobalLeaks();
+    if (failedTests + passedTests === totalTests) {
+        sys.puts("");
+        sys.puts("");
+        if (failedTests > 0) {
+            sys.print(failedTests);
+            sys.print(stylize(" Failed", "red"));
+            sys.print(", " + passedTests + " passed");
+        } else {
+            sys.print(stylize("All Passed ", "green"));
+            sys.print(passedTests + " run");
+        }
+        if (leaked.length > 0) {
+            sys.puts("");
+            sys.puts("");
+            sys.print(stylize("Global leak detected: ", "red") + leaked.join(', '));
+            sys.print("\n");
+        }
+    }
+}
+
+function toCSS(options, path, callback) {
+    var css;
+    options = options || {};
+    fs.readFile(path, 'utf8', function (e, str) {
+        if (e) { return callback(e); }
+        
+        options.paths = [require('path').dirname(path)];
+        options.filename = require('path').resolve(process.cwd(), path);
+        options.optimization = options.optimization || 0;
+
+        new(less.Parser)(options).parse(str, function (err, tree) {
             if (err) {
                 callback(err);
             } else {
                 try {
-                    css = tree.toCSS();
+                    css = tree.toCSS(options);
                     callback(null, css);
                 } catch (e) {
                     callback(e);
@@ -113,4 +245,16 @@ function toCSS(path, callback) {
             }
         });
     });
+}
+
+function testNoOptions() {
+    totalTests++;
+    try {
+        sys.print("- Integration - creating parser without options: ");
+        new(less.Parser)();
+    } catch(e) {
+        fail(stylize("FAIL\n", "red"));
+        return;
+    }
+    ok(stylize("OK\n", "green"));
 }
