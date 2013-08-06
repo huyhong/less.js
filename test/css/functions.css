@@ -94,6 +94,13 @@
   shade: #686868;
   shade-full: #000000;
   shade-percent: #686868;
+  golden-line-height: goldenLineHeight(16px, 960px);
+  golden-font-size: goldenFontSize(75, 1.98, 960px);
+  modular-h1: modularScale(16px, 1.333, 4);
+  modular-h2: modularScale(16px, 1.333, 2);
+  modular-h3: modularScale(16px, 1.333, 1);
+  modular-body: modularScale(16px, 1.333, 0);
+  modular-subheader: modularScale(16px, 1.333, -1);
   fade-out: rgba(255, 0, 0, 0.95);
   fade-in: rgba(255, 0, 0, 0.9500000000000001);
   hsv: #4d2926;
